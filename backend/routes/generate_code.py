@@ -1,5 +1,6 @@
 import asyncio
 from dataclasses import dataclass
+import traceback
 from fastapi import APIRouter, WebSocket
 import openai
 from codegen.utils import extract_html_content
@@ -63,7 +64,7 @@ async def perform_image_generation(
         return completion
 
     if replicate_api_key:
-        image_generation_model = "sdxl-lightning"
+        image_generation_model = "flux"
         api_key = replicate_api_key
     else:
         if not openai_api_key:
@@ -271,7 +272,7 @@ async def stream_code(websocket: WebSocket):
                 # we decide which models to run
                 variant_models = []
                 if openai_api_key and anthropic_api_key:
-                    variant_models = ["openai", "anthropic"]
+                    variant_models = ["anthropic", "openai"]
                 elif openai_api_key:
                     variant_models = ["openai", "openai"]
                 elif anthropic_api_key:
@@ -308,11 +309,33 @@ async def stream_code(websocket: WebSocket):
                                 prompt_messages,
                                 api_key=anthropic_api_key,
                                 callback=lambda x, i=index: process_chunk(x, i),
-                                model=Llm.CLAUDE_3_5_SONNET_2024_06_20,
+                                model=Llm.CLAUDE_3_5_SONNET_2024_10_22,
                             )
                         )
 
-                completions = await asyncio.gather(*tasks)
+                # Run the models in parallel and capture exceptions if any
+                completions = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # If all generations failed, throw an error
+                all_generations_failed = all(
+                    isinstance(completion, Exception) for completion in completions
+                )
+                if all_generations_failed:
+                    await throw_error("Error generating code. Please contact support.")
+
+                    # Print the all the underlying exceptions for debugging
+                    for completion in completions:
+                        traceback.print_exception(
+                            type(completion), completion, completion.__traceback__
+                        )
+                    raise Exception("All generations failed")
+
+                # If some completions failed, replace them with empty strings
+                for index, completion in enumerate(completions):
+                    if isinstance(completion, Exception):
+                        completions[index] = ""
+                        print("Generation failed for variant", index)
+
                 print("Models used for generation: ", variant_models)
 
         except openai.AuthenticationError as e:
